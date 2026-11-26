@@ -1,0 +1,38 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "shircrypt"
+version = "1.0.3"
+description = "Modern, memory-safe, abi3 Rust cryptographic extension for MTProto 2.0."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LGPL-3.0-or-later" }
+authors = [{ name = "Vicious-Cycle" }]
+keywords = ["telegram", "mtproto", "crypto", "aes-ige", "rust", "pyo3"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = []
+
+[project.optional-dependencies]
+fallback = ["cryptography>=42.0.0"]
+dev = ["pytest>=8.0.0", "cryptography>=42.0.0", "maturin>=1.7,<2.0"]
+
+[project.urls]
+Homepage = "https://github.com/Vicious-Cycle/shircrypt"
+Repository = "https://github.com/Vicious-Cycle/shircrypt"
+
+[tool.maturin]
+python-source = "python"
+module-name = "shircrypt._shircrypt"
+features = ["pyo3/extension-module"]

@@ -1,0 +1,27 @@
+[package]
+name = "shircrypt"
+version = "1.0.3"
+edition = "2021"
+license = "LGPL-3.0-or-later"
+description = "Modern, memory-safe, abi3 Rust cryptographic extension for MTProto 2.0 (AES-256-IGE, CTR, CBC, KDF)."
+readme = "README.md"
+repository = "https://github.com/Vicious-Cycle/shircrypt"
+
+[lib]
+name = "_shircrypt"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"] }
+aes = "0.8"
+cbc = "0.1"
+cipher = "0.4"
+ctr = "0.9"
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
