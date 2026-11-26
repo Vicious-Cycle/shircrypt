@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "shircrypt"
-version = "1.0.3"
+version = "1.0.6"
 description = "Modern, memory-safe, abi3 Rust cryptographic extension for MTProto 2.0."
 readme = "README.md"
 requires-python = ">=3.11"
