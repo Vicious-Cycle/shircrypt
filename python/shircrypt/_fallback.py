@@ -309,3 +309,28 @@ def mtproto2_kdf(
     aes_key = sha_a[0:8] + sha_b[8:24] + sha_a[24:32]
     aes_iv = sha_b[0:8] + sha_a[8:24] + sha_b[24:32]
     return aes_key, aes_iv
+import hmac as _hmac
+
+
+def mtproto2_encrypt_packet(
+    auth_key: bytes | bytearray | memoryview,
+    padded_plaintext: bytes | bytearray | memoryview,
+    from_client: bool = True,
+) -> tuple[bytes, bytes]:
+    mk = compute_msg_key(auth_key, padded_plaintext, from_client=from_client)
+    aes_key, aes_iv = mtproto2_kdf(auth_key, mk, from_client=from_client)
+    return mk, ige256_encrypt(padded_plaintext, aes_key, aes_iv)
+
+
+def mtproto2_decrypt_packet(
+    auth_key: bytes | bytearray | memoryview,
+    msg_key: bytes | bytearray | memoryview,
+    ciphertext: bytes | bytearray | memoryview,
+    from_client: bool = False,
+) -> bytes:
+    aes_key, aes_iv = mtproto2_kdf(auth_key, msg_key, from_client=from_client)
+    plaintext = ige256_decrypt(ciphertext, aes_key, aes_iv)
+    expected = compute_msg_key(auth_key, plaintext, from_client=from_client)
+    if not _hmac.compare_digest(expected, bytes(msg_key)):
+        raise ValueError("MTProto 2.0 msg_key verification failed")
+    return plaintext

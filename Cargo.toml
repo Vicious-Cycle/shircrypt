@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"] }
-aes = "0.8"
+aes = { version = "0.8", features = ["zeroize"] }
 cbc = "0.1"
 cipher = "0.4"
 ctr = "0.9"

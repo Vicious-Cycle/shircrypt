@@ -11,6 +11,8 @@ try:
         ctr256_crypt,
         ige256_decrypt,
         ige256_encrypt,
+        mtproto2_decrypt_packet,
+        mtproto2_encrypt_packet,
         mtproto2_kdf,
     )
 
@@ -24,6 +26,8 @@ except ImportError:  # pragma: no cover - fallback when native wheel is not buil
         ctr256_crypt,
         ige256_decrypt,
         ige256_encrypt,
+        mtproto2_decrypt_packet,
+        mtproto2_encrypt_packet,
         mtproto2_kdf,
     )
 
@@ -39,5 +43,7 @@ __all__ = [
     "ctr256_crypt",
     "ige256_decrypt",
     "ige256_encrypt",
+    "mtproto2_decrypt_packet",
+    "mtproto2_encrypt_packet",
     "mtproto2_kdf",
 ]

@@ -81,5 +81,20 @@ class TestShircrypt(unittest.TestCase):
             shircrypt.mtproto2_kdf(b"0" * 256, b"short")
 
 
+
+    def test_mtproto2_packet_fused_roundtrip(self) -> None:
+        auth_key = bytes((i * 7) % 256 for i in range(256))
+        padded = os.urandom(512)
+        for from_client in (True, False):
+            mk, ct = shircrypt.mtproto2_encrypt_packet(auth_key, padded, from_client=from_client)
+            self.assertEqual(len(mk), 16)
+            self.assertEqual(len(ct), len(padded))
+            pt = shircrypt.mtproto2_decrypt_packet(auth_key, mk, ct, from_client=from_client)
+            self.assertEqual(pt, padded)
+            bad_mk = bytes([mk[0] ^ 0xFF]) + mk[1:]
+            with self.assertRaises(ValueError):
+                shircrypt.mtproto2_decrypt_packet(auth_key, bad_mk, ct, from_client=from_client)
+
+
 if __name__ == "__main__":
     unittest.main()
