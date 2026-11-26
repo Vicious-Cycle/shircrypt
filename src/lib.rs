@@ -199,7 +199,7 @@ fn cbc256_encrypt<'py>(
     validate_cbc_args(data, key, iv)?;
     PyBytes::new_bound_with(py, data.len(), |out| {
         out.copy_from_slice(data);
-        let run = || {
+        let mut run = || {
             let mut enc = Aes256CbcEnc::new_from_slices(key, iv).expect("validated key and iv");
             for chunk in out.chunks_exact_mut(16) {
                 enc.encrypt_block_mut(GenericArray::from_mut_slice(chunk));
@@ -224,7 +224,7 @@ fn cbc256_decrypt<'py>(
     validate_cbc_args(data, key, iv)?;
     PyBytes::new_bound_with(py, data.len(), |out| {
         out.copy_from_slice(data);
-        let run = || {
+        let mut run = || {
             let mut dec = Aes256CbcDec::new_from_slices(key, iv).expect("validated key and iv");
             for chunk in out.chunks_exact_mut(16) {
                 dec.decrypt_block_mut(GenericArray::from_mut_slice(chunk));
