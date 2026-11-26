@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - fallback when native wheel is not buil
         mtproto2_kdf,
     )
 
-    __version__ = "1.0.4"
+    __version__ = "1.0.6"
     BACKEND = "cryptography" if _HAS_CRYPTOGRAPHY else "pure-python"
 
 __all__ = [
