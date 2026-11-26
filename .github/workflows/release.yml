@@ -73,32 +73,9 @@ jobs:
           name: sdist
           path: dist
 
-  termux:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build Android (Termux) wheel
-        run: |
-          python -m pip install maturin
-          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android24-clang"
-          maturin build --release --target aarch64-linux-android --compatibility linux --out dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-termux
-          path: dist
-
   github-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos, sdist, termux]
+    needs: [linux, windows, macos, sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -123,7 +100,5 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Remove Android wheel (not accepted by PyPI)
-        run: rm -f dist/*-linux_aarch64.whl
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
