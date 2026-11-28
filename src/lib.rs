@@ -7,6 +7,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::ops::Deref;
 use zeroize::Zeroize;
@@ -22,6 +23,18 @@ fn xor16_into(dst: &mut [u8; 16], a: &[u8], b: &[u8]) {
     for i in 0..16 {
         dst[i] = a[i] ^ b[i];
     }
+}
+
+#[inline]
+fn ct_eq_8(a: &[u8; 8], b: &[u8]) -> bool {
+    if b.len() != 8 {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..8 {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
 }
 
 #[inline]
@@ -114,6 +127,35 @@ fn ige256_encrypt_core(data: &[u8], key: &[u8], iv: &[u8], out: &mut [u8]) {
     iv_c.zeroize();
     iv_p.zeroize();
     block.zeroize();
+}
+
+fn ige256_encrypt_in_place(buf: &mut [u8], key: &[u8], iv: &[u8]) {
+    let mut key_arr = *GenericArray::from_slice(key);
+    let cipher = Aes256::new(&key_arr);
+    key_arr.zeroize();
+
+    let mut iv_c = [0u8; 16];
+    let mut iv_p = [0u8; 16];
+    iv_c.copy_from_slice(&iv[..16]);
+    iv_p.copy_from_slice(&iv[16..32]);
+
+    let mut block = [0u8; 16];
+    let mut plain_copy = [0u8; 16];
+    for chunk in buf.chunks_exact_mut(16) {
+        plain_copy.copy_from_slice(chunk);
+        xor16_into(&mut block, &plain_copy, &iv_c);
+        cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
+        for i in 0..16 {
+            let c = block[i] ^ iv_p[i];
+            chunk[i] = c;
+            iv_c[i] = c;
+            iv_p[i] = plain_copy[i];
+        }
+    }
+    iv_c.zeroize();
+    iv_p.zeroize();
+    block.zeroize();
+    plain_copy.zeroize();
 }
 
 fn ige256_decrypt_core(data: &[u8], key: &[u8], iv: &[u8], out: &mut [u8]) {
@@ -217,6 +259,89 @@ fn mtproto2_kdf_core(auth_key: &[u8], msg_key: &[u8], from_client: bool) -> ([u8
     (aes_key, aes_iv)
 }
 
+#[inline]
+fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
+    ((a as u128 * b as u128) % m as u128) as u64
+}
+
+#[inline]
+fn step_poly(y: u64, c: u64, m: u64) -> u64 {
+    let sq = (y as u128 * y as u128) % m as u128;
+    ((sq + c as u128) % m as u128) as u64
+}
+
+#[inline]
+fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+fn factorize_pq_core(pq: u64) -> Result<(u64, u64), &'static str> {
+    if pq <= 1 {
+        return Err("Invalid pq: must be > 1");
+    }
+    if pq % 2 == 0 {
+        let other = pq / 2;
+        return Ok(if 2 <= other { (2, other) } else { (other, 2) });
+    }
+
+    let mut rng_state: u64 = 0x5348_4952_4441_4C;
+    let mut next_rand = || -> u64 {
+        rng_state = rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        rng_state >> 1
+    };
+
+    loop {
+        let mut y = (next_rand() % (pq - 1)) + 1;
+        let c = (next_rand() % (pq - 1)) + 1;
+        let m: u64 = 128;
+        let mut g: u64 = 1;
+        let mut r: u64 = 1;
+        let mut q: u64 = 1;
+        let mut x = y;
+        let mut ys = y;
+
+        while g == 1 {
+            x = y;
+            for _ in 0..r {
+                y = step_poly(y, c, pq);
+            }
+            let mut k: u64 = 0;
+            while k < r && g == 1 {
+                ys = y;
+                let limit = m.min(r - k);
+                for _ in 0..limit {
+                    y = step_poly(y, c, pq);
+                    q = mul_mod(q, x.abs_diff(y), pq);
+                }
+                g = gcd_u64(q, pq);
+                k += m;
+            }
+            r <<= 1;
+        }
+        if g == pq {
+            loop {
+                ys = step_poly(ys, c, pq);
+                g = gcd_u64(x.abs_diff(ys), pq);
+                if g > 1 {
+                    break;
+                }
+            }
+        }
+        if g != pq {
+            let p = g;
+            let other = pq / p;
+            return Ok(if p <= other { (p, other) } else { (other, p) });
+        }
+    }
+}
+
 /// Input buffer accepting `bytes`, `bytearray`, `memoryview` and any other
 /// C-contiguous byte buffer. `bytes` is borrowed zero-copy; other buffer
 /// types are copied once (and wiped on drop, since they may hold key material).
@@ -254,6 +379,160 @@ impl Drop for Buf<'_> {
             v.zeroize();
         }
     }
+}
+
+/// Persistent 2048-bit MTProto 2.0 AuthKey held in Rust memory.
+/// Provides single-allocation `seal_packet` and zero-slice `open_packet`.
+#[pyclass(frozen)]
+struct NativeAuthKey {
+    key: [u8; 256],
+    key_id_bytes: [u8; 8],
+    aux_hash: [u8; 8],
+    key_id: u64,
+}
+
+impl Drop for NativeAuthKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
+        self.key_id_bytes.zeroize();
+        self.aux_hash.zeroize();
+    }
+}
+
+#[pymethods]
+impl NativeAuthKey {
+    #[new]
+    fn new(key: Buf<'_>) -> PyResult<Self> {
+        let key_slice: &[u8] = &key;
+        validate_auth_key(key_slice)?;
+        let mut key_arr = [0u8; 256];
+        key_arr.copy_from_slice(key_slice);
+
+        let sha1 = Sha1::digest(&key_arr);
+        let mut aux_hash = [0u8; 8];
+        aux_hash.copy_from_slice(&sha1[..8]);
+        let mut key_id_bytes = [0u8; 8];
+        key_id_bytes.copy_from_slice(&sha1[12..20]);
+        let key_id = u64::from_le_bytes(key_id_bytes);
+
+        Ok(Self {
+            key: key_arr,
+            key_id_bytes,
+            aux_hash,
+            key_id,
+        })
+    }
+
+    #[getter]
+    fn key<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, &self.key)
+    }
+
+    #[getter]
+    fn key_id_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, &self.key_id_bytes)
+    }
+
+    #[getter]
+    fn aux_hash<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, &self.aux_hash)
+    }
+
+    #[getter]
+    fn key_id(&self) -> u64 {
+        self.key_id
+    }
+
+    /// Seal `inner_payload` into `[8B key_id][16B msg_key][ciphertext]` in a single allocation.
+    #[pyo3(signature = (inner_payload, from_client = true))]
+    fn seal_packet<'py>(
+        &self,
+        py: Python<'py>,
+        inner_payload: Buf<'py>,
+        from_client: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let inner: &[u8] = &inner_payload;
+        let inner_len = inner.len();
+        let pad_len = (16 - ((inner_len + 12) % 16)) % 16 + 12;
+        let padded_len = inner_len + pad_len;
+
+        PyBytes::new_bound_with(py, 24 + padded_len, |out| {
+            let (header, ct_out) = out.split_at_mut(24);
+            header[..8].copy_from_slice(&self.key_id_bytes);
+            ct_out[..inner_len].copy_from_slice(inner);
+            getrandom::getrandom(&mut ct_out[inner_len..])
+                .map_err(|e| PyValueError::new_err(format!("RNG error: {e}")))?;
+
+            let mut run = || {
+                let msg_key = compute_msg_key_core(&self.key, ct_out, from_client);
+                header[8..24].copy_from_slice(&msg_key);
+                let (mut aes_key, mut aes_iv) = mtproto2_kdf_core(&self.key, &msg_key, from_client);
+                ige256_encrypt_in_place(ct_out, &aes_key, &aes_iv);
+                aes_key.zeroize();
+                aes_iv.zeroize();
+            };
+            if padded_len >= GIL_RELEASE_THRESHOLD {
+                py.allow_threads(run);
+            } else {
+                run();
+            }
+            Ok(())
+        })
+    }
+
+    /// Open and authenticate `[8B key_id][16B msg_key][ciphertext]` without Python slicing.
+    #[pyo3(signature = (packet, from_client = false))]
+    fn open_packet<'py>(
+        &self,
+        py: Python<'py>,
+        packet: Buf<'py>,
+        from_client: bool,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let pkt: &[u8] = &packet;
+        if pkt.len() < 24 + 16 {
+            return Err(PyValueError::new_err("MTProto packet too short"));
+        }
+        if !ct_eq_8(&self.key_id_bytes, &pkt[..8]) {
+            return Err(PyValueError::new_err("auth_key_id mismatch"));
+        }
+        let msg_key = &pkt[8..24];
+        let ciphertext = &pkt[24..];
+        if ciphertext.len() % 16 != 0 {
+            return Err(PyValueError::new_err(
+                "Ciphertext length is not a multiple of 16",
+            ));
+        }
+
+        PyBytes::new_bound_with(py, ciphertext.len(), |out| {
+            let mut valid = false;
+            let mut run = || {
+                let (mut aes_key, mut aes_iv) =
+                    mtproto2_kdf_core(&self.key, msg_key, from_client);
+                ige256_decrypt_core(ciphertext, &aes_key, &aes_iv, out);
+                aes_key.zeroize();
+                aes_iv.zeroize();
+                let expected = compute_msg_key_core(&self.key, out, from_client);
+                valid = ct_eq_16(&expected, msg_key);
+            };
+            if ciphertext.len() >= GIL_RELEASE_THRESHOLD {
+                py.allow_threads(run);
+            } else {
+                run();
+            }
+            if !valid {
+                out.zeroize();
+                return Err(PyValueError::new_err(
+                    "MTProto 2.0 msg_key verification failed",
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
+#[pyfunction]
+fn factorize_pq(pq: u64) -> PyResult<(u64, u64)> {
+    factorize_pq_core(pq).map_err(PyValueError::new_err)
 }
 
 #[pyfunction]
@@ -504,6 +783,8 @@ fn mtproto2_decrypt_packet<'py>(
 #[pymodule]
 fn _shircrypt(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add_class::<NativeAuthKey>()?;
+    m.add_function(wrap_pyfunction!(factorize_pq, m)?)?;
     m.add_function(wrap_pyfunction!(ige256_encrypt, m)?)?;
     m.add_function(wrap_pyfunction!(ige256_decrypt, m)?)?;
     m.add_function(wrap_pyfunction!(ctr256_crypt, m)?)?;
@@ -531,6 +812,10 @@ mod tests {
         assert_ne!(&ct[..], plain);
         ige256_decrypt_core(&ct, &key, &iv, &mut pt);
         assert_eq!(&pt[..], plain);
+
+        let mut in_place = plain.to_vec();
+        ige256_encrypt_in_place(&mut in_place, &key, &iv);
+        assert_eq!(in_place, ct);
     }
 
     #[test]
@@ -574,5 +859,14 @@ mod tests {
             let mk_check = compute_msg_key_core(&auth_key, &pt, from_client);
             assert!(ct_eq_16(&mk_check, &mk));
         }
+    }
+
+    #[test]
+    fn test_factorize_pq() {
+        let pq = 179424673u64 * 179424691u64;
+        let (p, q) = factorize_pq_core(pq).unwrap();
+        assert_eq!((p, q), (179424673, 179424691));
+        assert_eq!(factorize_pq_core(14).unwrap(), (2, 7));
+        assert!(factorize_pq_core(1).is_err());
     }
 }

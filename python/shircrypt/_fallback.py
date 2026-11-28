@@ -334,3 +334,107 @@ def mtproto2_decrypt_packet(
     if not _hmac.compare_digest(expected, bytes(msg_key)):
         raise ValueError("MTProto 2.0 msg_key verification failed")
     return plaintext
+
+import math as _math
+import os as _os
+import random as _random
+import struct as _struct
+
+
+def factorize_pq(pq: int) -> tuple[int, int]:
+    if pq <= 1 or pq >= (1 << 64):
+        raise ValueError(f"Invalid pq: {pq}")
+    if pq % 2 == 0:
+        other = pq // 2
+        return (2, other) if 2 <= other else (other, 2)
+
+    rng = _random.Random(0x5348495244414C)
+    while True:
+        y = rng.randrange(1, pq)
+        c = rng.randrange(1, pq)
+        m = 128
+        g = 1
+        r = 1
+        q = 1
+        x = y
+        ys = y
+        while g == 1:
+            x = y
+            for _ in range(r):
+                y = (pow(y, 2, pq) + c) % pq
+            k = 0
+            while k < r and g == 1:
+                ys = y
+                for _ in range(min(m, r - k)):
+                    y = (pow(y, 2, pq) + c) % pq
+                    q = (q * abs(x - y)) % pq
+                g = _math.gcd(q, pq)
+                k += m
+            r <<= 1
+        if g == pq:
+            while True:
+                ys = (pow(ys, 2, pq) + c) % pq
+                g = _math.gcd(abs(x - ys), pq)
+                if g > 1:
+                    break
+        if g != pq:
+            p = g
+            other = pq // p
+            return (p, other) if p <= other else (other, p)
+
+
+class NativeAuthKey:
+    __slots__ = ("_key", "_key_id_bytes", "_aux_hash", "_key_id")
+
+    def __init__(self, key: bytes | bytearray | memoryview) -> None:
+        raw = bytes(key)
+        if len(raw) != 256:
+            raise ValueError(f"auth_key must be 256 bytes, got {len(raw)}")
+        self._key = raw
+        sha1 = hashlib.sha1(raw).digest()
+        self._aux_hash = sha1[:8]
+        self._key_id_bytes = sha1[12:20]
+        self._key_id = _struct.unpack("<Q", self._key_id_bytes)[0]
+
+    @property
+    def key(self) -> bytes:
+        return self._key
+
+    @property
+    def key_id_bytes(self) -> bytes:
+        return self._key_id_bytes
+
+    @property
+    def aux_hash(self) -> bytes:
+        return self._aux_hash
+
+    @property
+    def key_id(self) -> int:
+        return self._key_id
+
+    def seal_packet(
+        self,
+        inner_payload: bytes | bytearray | memoryview,
+        from_client: bool = True,
+    ) -> bytes:
+        inner = bytes(inner_payload)
+        pad_len = (16 - ((len(inner) + 12) % 16)) % 16 + 12
+        padded = inner + _os.urandom(pad_len)
+        mk, ct = mtproto2_encrypt_packet(self._key, padded, from_client=from_client)
+        return self._key_id_bytes + mk + ct
+
+    def open_packet(
+        self,
+        packet: bytes | bytearray | memoryview,
+        from_client: bool = False,
+    ) -> bytes:
+        pkt = bytes(packet)
+        if len(pkt) < 40:
+            raise ValueError("MTProto packet too short")
+        if not _hmac.compare_digest(pkt[:8], self._key_id_bytes):
+            raise ValueError("auth_key_id mismatch")
+        msg_key = pkt[8:24]
+        ciphertext = pkt[24:]
+        if len(ciphertext) % 16 != 0:
+            raise ValueError("Ciphertext length is not a multiple of 16")
+        return mtproto2_decrypt_packet(self._key, msg_key, ciphertext, from_client=from_client)

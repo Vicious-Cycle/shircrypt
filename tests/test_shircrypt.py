@@ -96,5 +96,34 @@ class TestShircrypt(unittest.TestCase):
                 shircrypt.mtproto2_decrypt_packet(auth_key, bad_mk, ct, from_client=from_client)
 
 
+
+    def test_native_auth_key_seal_and_open(self) -> None:
+        key = bytes((i * 13) % 256 for i in range(256))
+        nk = shircrypt.NativeAuthKey(key)
+        self.assertEqual(nk.key, key)
+        self.assertEqual(len(nk.key_id_bytes), 8)
+        self.assertEqual(len(nk.aux_hash), 8)
+        for from_client in (True, False):
+            for size in (0, 32, 127, 5000):
+                inner = os.urandom(size)
+                pkt = nk.seal_packet(inner, from_client=from_client)
+                self.assertEqual(pkt[:8], nk.key_id_bytes)
+                self.assertEqual((len(pkt) - 24) % 16, 0)
+                opened = nk.open_packet(pkt, from_client=from_client)
+                self.assertTrue(opened.startswith(inner))
+                self.assertGreaterEqual(len(opened) - len(inner), 12)
+        with self.assertRaises(ValueError):
+            nk.open_packet(b"\x00" * 40, from_client=False)
+        pkt = nk.seal_packet(b"hello-shirdal", from_client=True)
+        bad_pkt = pkt[:8] + bytes([pkt[8] ^ 0xFF]) + pkt[9:]
+        with self.assertRaises(ValueError):
+            nk.open_packet(bad_pkt, from_client=True)
+
+    def test_factorize_pq(self) -> None:
+        self.assertEqual(shircrypt.factorize_pq(179424673 * 179424691), (179424673, 179424691))
+        self.assertEqual(shircrypt.factorize_pq(14), (2, 7))
+        with self.assertRaises(ValueError):
+            shircrypt.factorize_pq(1)
+
 if __name__ == "__main__":
     unittest.main()
